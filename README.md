@@ -6,8 +6,8 @@ GitHub Actions cron jobs that keep The Hardwood's time-series tables fresh.
 
 | Workflow | Schedule (UTC) | Script | Writes to |
 |---|---|---|---|
-| `bdl-injury-snapshot.yml` | every 30 min (`*/30 * * * *`) | `scripts/bdl_injury.py` | `wnba_bdl_injury_snapshots` |
-| `odds-snapshot.yml`       | every 30 min (`*/30 * * * *`) | `scripts/odds_snapshot.py` | `wnba_live_game_line_snapshots`, `wnba_live_player_prop_snapshots` |
+| `bdl-injury-snapshot.yml` | every 15 min (`*/15 * * * *`) | `scripts/bdl_injury.py` | `wnba_bdl_injury_snapshots` |
+| `odds-snapshot.yml`       | every 15 min (`*/15 * * * *`) | `scripts/odds_snapshot.py` | `wnba_live_game_line_snapshots`, `wnba_live_player_prop_snapshots` |
 | `freshness-check.yml`     | every 30 min (`*/30 * * * *`) | `scripts/freshness_check.py` | (read-only — exits 1 if any table is stale > 30 min during May-Oct) |
 
 All three workflows also support **manual trigger** via the Actions tab (`workflow_dispatch`) — useful for testing or running ad-hoc.
@@ -52,17 +52,17 @@ python scripts/freshness_check.py   # should print FRESH/STALE per table
 
 `wnba_bdl_injury_snapshots` has no UNIQUE constraint; each run appends one row per (snapshot_at, player). De-duplication happens downstream.
 
-## Why every 30 minutes
+## Why every 15 minutes for snapshots, every 30 for freshness check
 
-Freshness alert threshold is 30 min so snapshot cadence has to match. 48 snapshots/day per workflow gives near-continuous coverage of opening→closing line evolution — fine-grained enough for accurate CLV measurement and intraday line-movement features.
+15-min snapshot cadence captures all meaningful intraday line movements — book-to-book disagreement windows, sharp-action spikes, and the open→close progression. Freshness check runs at 30 min because the snapshot interval is 15 min, so a single missed run plus GHA jitter (5-15 min typical) still stays under the 30-min stale threshold; two consecutive misses trip the alert.
 
 ## Cost
 
-The Odds API: ~30 credits per game per snapshot (3 markets × 1 region × 10 credits) plus per-event property calls. Per-run cost = ~12 API calls × 30 credits ≈ 360 credits when 6 events are upcoming. 48 runs/day × 360 = ~17K credits/day = ~520K credits/month. Subscription has ~4.7M credits — about 9 months of runway at this cadence. Off-season (no games) costs near-zero.
+**The Odds API**: 30 credits per game per snapshot (3 markets × 1 region × 10) plus per-event calls. Per-run cost ≈ 12 API calls × 30 cr = ~360 credits with 6 upcoming events. 96 runs/day × 360 = ~35K credits/day ≈ 1.05M credits/month during peak season. Subscription has ~4.7M credits — about 4.5 months of runway at full season cadence. Off-season (no upcoming games) costs near-zero per run.
 
-BDL: free at our usage level.
+**BDL**: free at our usage level.
 
-GitHub Actions: each snapshot run ~30-60s, freshness check ~15s. 48 runs/day × 3 workflows × ~50s avg ≈ 120 min/day ≈ 3,600 min/month. **Free tier is 2,000 min/month for private repos** — this will overshoot by ~1,600 min and bill ~$13/month overage (Linux runner at $0.008/min). Public repo = unlimited free.
+**GitHub Actions**: each snapshot run ~30-60s, freshness check ~15s. 96 × 2 snapshotters × 45s + 48 × 15s ≈ 156 min/day ≈ 4,700 min/month. **Free tier is 2,000 min/month for private repos** — overshoots by ~2,700 min, billing ~$22/month overage (Linux at $0.008/min). Public repo = unlimited free.
 
 ## History
 
