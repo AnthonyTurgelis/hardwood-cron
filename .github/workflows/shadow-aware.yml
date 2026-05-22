@@ -1,0 +1,35 @@
+name: Shadow AWARE Tracker
+
+# Logs per-(game, player, snapshot) tuples to wnba_forward_play_prob_log and
+# computes shadow AWARE pred_margin per scheme to wnba_forward_aware_shadow.
+# Same cadence as forward-bet-tracker so AWARE state is captured at the same
+# operational moments. Production v12 BLIND untouched.
+on:
+  schedule:
+    - cron: '0 13 * * *'
+    - cron: '0 14 * * *'
+    - cron: '0 20,21,22,23 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: shadow-aware
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run shadow AWARE tracker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python scripts/shadow_aware.py

@@ -10,6 +10,7 @@ GitHub Actions cron jobs that keep The Hardwood's time-series tables fresh.
 | `odds-snapshot.yml`       | every 15 min (`*/15 * * * *`) | `scripts/odds_snapshot.py` | `wnba_live_game_line_snapshots`, `wnba_live_player_prop_snapshots` |
 | `freshness-check.yml`     | every 30 min (`*/30 * * * *`) | `scripts/freshness_check.py` | (read-only — exits 1 if any table is stale > 30 min during May-Oct) |
 | `forward-bet-tracker.yml` | 13/14/20-23 UTC daily (7 runs/day) | `scripts/forward_bet_tracker.py` | `wnba_forward_paper_bets` (emit + grade, idempotent UPSERT) |
+| `shadow-aware.yml`        | 13/14/20-23 UTC daily (7 runs/day) | `scripts/shadow_aware.py` | `wnba_forward_aware_shadow` (per-scheme pred_margin), `wnba_forward_play_prob_log` (clean training-set tuples) |
 
 All three workflows also support **manual trigger** via the Actions tab (`workflow_dispatch`) — useful for testing or running ad-hoc.
 
