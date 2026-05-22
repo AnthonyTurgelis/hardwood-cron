@@ -1,0 +1,42 @@
+name: Forward Bet Tracker
+
+# Runs the clean 3-edge paper-bet tracker on a schedule that matches the
+# v58 operational playbook:
+#   - 14:00 UTC daily       morning open — emit FIRE_OPEN bets, persist
+#   - 20-23:00 UTC hourly   pre-tip — re-check HOLD games as injury status resolves
+#   - 13:00 UTC daily       settlement — grade previous night's completed games
+# Each run also auto-grades any newly-settled bets, so the 13:00 run is
+# nominal — settling is just a side-effect of any later run that sees a
+# now-complete game_id in wnba_games.
+on:
+  schedule:
+    - cron: '0 13 * * *'           # 13:00 UTC — settlement sweep
+    - cron: '0 14 * * *'           # 14:00 UTC — morning open emit
+    - cron: '0 20,21,22,23 * * *'  # pre-tip hourly window
+  workflow_dispatch:
+
+concurrency:
+  group: forward-bet-tracker
+  cancel-in-progress: false
+
+jobs:
+  tracker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run forward bet tracker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python scripts/forward_bet_tracker.py
