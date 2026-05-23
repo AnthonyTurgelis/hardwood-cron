@@ -31,6 +31,13 @@ V12_AWAY_STR  = -41.0575
 SCHEMES = ["scheme_a_crude", "scheme_b_reversal", "scheme_c_decayed"]
 LOOKAHEAD_HOURS = 48
 
+# wnba_forward_play_prob_log has PK (game_id, player_id, snapshot_at) where snapshot_at =
+# wnba_player_availability_current.computed_at. If upstream refresh stalls, every INSERT
+# silently no-ops on ON CONFLICT and the table goes stale without any error surfacing.
+# Fail loud past this age so the workflow goes red and the operator gets paged. Discovered
+# 2026-05-23 when play_prob_log lagged 26h while aware_shadow (same script) stayed fresh.
+AVAILABILITY_STALE_HOURS = 6.0
+
 TEAM_NAME_TO_ABBR = {
     "Atlanta Dream":"ATL","Chicago Sky":"CHI","Connecticut Sun":"CON",
     "Dallas Wings":"DAL","Golden State Valkyries":"GSV","Indiana Fever":"IND",
@@ -157,6 +164,10 @@ def main() -> int:
     games = pull_target_games(engine, now_utc)
     print(f"  unplayed 2026 games in next {LOOKAHEAD_HOURS}h: {len(games)}")
 
+    availability_age_h = None
+    log_attempted = 0
+    log_inserted = 0
+
     if len(games):
         games = pull_commence_time_per_game(engine, games)
         teams = sorted(set(games["home_abbr"]) | set(games["away_abbr"]))
@@ -195,6 +206,7 @@ def main() -> int:
                     hours_to_tip=float(htt) if htt is not None else None,
                     roll10_min=float(p["roll10_min"]), rating=float(p["rating"])))
 
+        log_attempted = len(log_rows)
         with engine.begin() as c:
             for r in shadow_rows:
                 c.execute(sql_text("""
@@ -208,7 +220,7 @@ def main() -> int:
                       pred_margin_aware=EXCLUDED.pred_margin_aware
                 """), r)
             for r in log_rows:
-                c.execute(sql_text("""
+                res = c.execute(sql_text("""
                     INSERT INTO wnba_forward_play_prob_log (
                       game_id, player_id, snapshot_at, logged_at, player_name,
                       team_abbr, status_norm, hours_to_tip, roll10_min, rating
@@ -216,7 +228,13 @@ def main() -> int:
                       :team_abbr, :status_norm, :hours_to_tip, :roll10_min, :rating)
                     ON CONFLICT (game_id, player_id, snapshot_at) DO NOTHING
                 """), r)
-        print(f"  shadow predictions: {len(shadow_rows)} | log rows inserted (idempotent): {len(log_rows)}")
+                log_inserted += (res.rowcount or 0)
+
+        availability_age_h = (now_utc - snap_at.to_pydatetime().astimezone(timezone.utc)).total_seconds() / 3600.0
+        print(f"  shadow predictions written/updated: {len(shadow_rows)}")
+        print(f"  log rows: {log_attempted} attempted, {log_inserted} NEW, "
+              f"{log_attempted - log_inserted} duplicates (PK collision on snapshot_at)")
+        print(f"  availability snap_at={snap_at.isoformat()}  age={availability_age_h:.2f}h")
 
     # Grade settled
     actuals = pd.read_sql(sql_text("""
@@ -245,6 +263,21 @@ def main() -> int:
     n_log_graded = pd.read_sql(sql_text("SELECT COUNT(*) FROM wnba_forward_play_prob_log WHERE actual_played IS NOT NULL"), engine).iloc[0,0]
     n_shadow = pd.read_sql(sql_text("SELECT COUNT(*) FROM wnba_forward_aware_shadow"), engine).iloc[0,0]
     print(f"  totals: shadow={n_shadow:,}  log={n_log:,} ({n_log_graded:,} graded)")
+
+    # Fail loud if upstream availability_current is stuck. Shadow predictions have already
+    # been written by this point (UPSERT on (game_id, scheme) means they refresh regardless),
+    # but play_prob_log silently no-ops on PK collision when snap_at doesn't advance. Without
+    # this guard the workflow stays green while the training-set table goes stale.
+    if availability_age_h is not None and availability_age_h > AVAILABILITY_STALE_HOURS:
+        print(
+            f"\nFATAL: wnba_player_availability_current.computed_at is {availability_age_h:.2f}h "
+            f"old (threshold {AVAILABILITY_STALE_HOURS}h). wnba_forward_play_prob_log silently "
+            f"no-ops on ON CONFLICT (game_id, player_id, snapshot_at) until upstream refresh "
+            f"advances snap_at. ROOT CAUSE: fix the wnba_player_availability_current refresh "
+            f"job; this script will resume writing log rows automatically once snap_at moves.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

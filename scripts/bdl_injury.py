@@ -11,7 +11,7 @@ Required env vars:
 
 Exit codes:
   0 — wrote N rows (incl. zero-row marker for "no injuries reported")
-  1 — API or DB error
+  1 — API or DB error (always returns non-zero on any failure path)
 
 Local test (PowerShell):
   $env:SUPABASE_URL = "postgresql+psycopg2://..."
@@ -21,6 +21,7 @@ Local test (PowerShell):
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -29,6 +30,62 @@ from sqlalchemy import create_engine
 
 BDL_INJURIES_URL = "https://api.balldontlie.io/wnba/v1/player_injuries"
 TARGET_TABLE = "wnba_bdl_injury_snapshots"
+
+MAX_PAGES = 30
+RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_ATTEMPTS = 4   # 1 initial + 3 retries
+RETRY_BACKOFF_SEC = (2, 5, 15)
+
+
+def _log_response_diag(r: requests.Response, page: int) -> None:
+    """Dump headers + body excerpt so workflow logs reveal the real failure cause."""
+    diag_headers = {k: r.headers.get(k) for k in (
+        "Content-Type", "X-RateLimit-Remaining", "X-RateLimit-Limit",
+        "X-RateLimit-Reset", "Retry-After",
+    )}
+    print(f"  diag@page{page}: status={r.status_code} headers={diag_headers}",
+          file=sys.stderr)
+    print(f"  diag@page{page}: body[:1000]={r.text[:1000]!r}", file=sys.stderr)
+
+
+def fetch_page(headers, cursor, page):
+    """Fetch one page with retry on 429/5xx. Returns parsed JSON dict or raises RuntimeError."""
+    params = {"per_page": 100}
+    if cursor:
+        params["cursor"] = cursor
+    last_err = None
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            r = requests.get(BDL_INJURIES_URL, headers=headers, params=params, timeout=30)
+        except Exception as e:
+            last_err = e
+            if attempt < RETRY_ATTEMPTS - 1:
+                wait = RETRY_BACKOFF_SEC[min(attempt, len(RETRY_BACKOFF_SEC) - 1)]
+                print(f"  page{page} attempt{attempt + 1}: request exc {e!r} — retry in {wait}s",
+                      file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"request failed at page {page} after {RETRY_ATTEMPTS} attempts: {e!r}")
+
+        if r.status_code == 200:
+            try:
+                return r.json()
+            except Exception as e:
+                _log_response_diag(r, page)
+                raise RuntimeError(f"200 with non-JSON body at page {page}: {e!r}")
+
+        if r.status_code in RETRY_STATUS and attempt < RETRY_ATTEMPTS - 1:
+            wait = RETRY_BACKOFF_SEC[min(attempt, len(RETRY_BACKOFF_SEC) - 1)]
+            print(f"  page{page} attempt{attempt + 1}: HTTP {r.status_code} — retry in {wait}s",
+                  file=sys.stderr)
+            _log_response_diag(r, page)
+            time.sleep(wait)
+            continue
+
+        _log_response_diag(r, page)
+        raise RuntimeError(f"HTTP {r.status_code} at page {page} (non-retryable or retries exhausted)")
+
+    raise RuntimeError(f"page {page} exhausted retries; last exc: {last_err!r}")
 
 
 def main() -> int:
@@ -47,28 +104,32 @@ def main() -> int:
     cursor = None
     page = 0
     while True:
-        params = {"per_page": 100}
-        if cursor:
-            params["cursor"] = cursor
         try:
-            r = requests.get(BDL_INJURIES_URL, headers=headers, params=params, timeout=30)
-        except Exception as e:
-            print(f"FATAL: request failed at page {page}: {e}", file=sys.stderr)
+            d = fetch_page(headers, cursor, page)
+        except RuntimeError as e:
+            print(f"FATAL: {e}", file=sys.stderr)
             return 1
-        if r.status_code != 200:
-            print(f"FATAL: HTTP {r.status_code} at page {page}: {r.text[:200]}", file=sys.stderr)
-            return 1
-        d = r.json()
         all_records.extend(d.get("data", []))
         cursor = (d.get("meta") or {}).get("next_cursor")
         page += 1
-        if not cursor or page > 30:
+        if not cursor:
             break
+        if page >= MAX_PAGES:
+            # Never silently truncate. If we hit this cap with cursor still set,
+            # BDL paginated beyond what we expected — fail loud so the cap can be raised.
+            print(f"FATAL: pagination cap {MAX_PAGES} hit with cursor still set "
+                  f"(have {len(all_records)} records so far) — raise MAX_PAGES and re-run",
+                  file=sys.stderr)
+            return 1
 
     print(f"Pulled {len(all_records)} records across {page} pages")
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    engine = create_engine(db_url, pool_pre_ping=True)
+    try:
+        engine = create_engine(db_url, pool_pre_ping=True)
+    except Exception as e:
+        print(f"FATAL: DB init failed: {e!r}", file=sys.stderr)
+        return 1
 
     if not all_records:
         marker = pd.DataFrame([{
@@ -81,7 +142,7 @@ def main() -> int:
         try:
             marker.to_sql(TARGET_TABLE, engine, if_exists="append", index=False, method="multi")
         except Exception as e:
-            print(f"FATAL: DB write failed (marker): {e}", file=sys.stderr)
+            print(f"FATAL: DB write failed (marker): {e!r}", file=sys.stderr)
             return 1
         print(f"Captured 0 rows from BDL injuries at {now.isoformat()} (wrote NO_INJURIES marker)")
         return 0
@@ -107,7 +168,7 @@ def main() -> int:
         df = pd.DataFrame(rows)
         df.to_sql(TARGET_TABLE, engine, if_exists="append", index=False, method="multi", chunksize=200)
     except Exception as e:
-        print(f"FATAL: DB write failed: {e}", file=sys.stderr)
+        print(f"FATAL: DB write failed: {e!r}", file=sys.stderr)
         return 1
 
     print(f"Captured {len(df)} rows from BDL injuries at {now.isoformat()}")
