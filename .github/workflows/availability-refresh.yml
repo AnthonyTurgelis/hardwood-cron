@@ -1,0 +1,37 @@
+name: Availability Refresh
+
+# Appends a fresh wnba_player_availability_current snapshot via the accent-cascade
+# resolver (scripts/availability_refresh.py — port of cell_3_v2). Runs a few minutes
+# AFTER the BDL injury snapshotter so it consumes the latest injury state. Without
+# this workflow computed_at re-freezes and wnba_forward_play_prob_log silently
+# stalls (delta v78/v79). INSERT-only — never deletes prior snapshots.
+on:
+  schedule:
+    - cron: '5,35 * * * *'  # twice hourly, 5 min after the */15 BDL ticks
+  workflow_dispatch:
+
+concurrency:
+  group: availability-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run availability refresh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python scripts/availability_refresh.py

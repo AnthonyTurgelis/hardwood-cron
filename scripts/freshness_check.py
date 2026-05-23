@@ -18,13 +18,19 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text as sql_text
 
-STALE_HOURS = 0.5
+# 2.0h, not 0.5h: GitHub throttles the */15 snapshotter crons to ~hourly, so a
+# 0.5h threshold trips on healthy crons (delta v77). 2.0h gives margin over the
+# real throttled cadence while still catching a genuinely stalled writer.
+STALE_HOURS = 2.0
 IN_SEASON_MONTHS = {5, 6, 7, 8, 9, 10}
 
 TABLES = [
     ("wnba_live_game_line_snapshots", "snapshot_at"),
     ("wnba_live_player_prop_snapshots", "snapshot_at"),
     ("wnba_bdl_injury_snapshots", "snapshot_at"),
+    # The canary was previously blind to this — the one table that actually
+    # rotted (frozen 80h, delta v78). Now refreshed by availability-refresh.yml.
+    ("wnba_player_availability_current", "computed_at"),
 ]
 
 
