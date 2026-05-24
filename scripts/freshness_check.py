@@ -36,16 +36,16 @@ TABLES = [
     # Canary was blind to this — the table that actually rotted (frozen 80h, v78);
     # refreshed by availability-refresh.yml.
     ("wnba_player_availability_current", "computed_at", STALE_HOURS, True),
-    # KEEP-signal A of the v84 ghost filter. Its CLEAN content is derived from
+    # KEEP-signal A of the v84 ghost filter. CLEAN content is re-derived from
     # wnba_daily_rosters (raw_payload source='wnba_daily_rosters_espn_match'), NOT a
-    # raw BDL /players pull (which is a bloated all-time dump incl. defunct teams —
-    # the 856-row 2026-05-19 bug). So its refresh depends on daily_rosters being
-    # fresh. WARN-only until a daily_rosters→derive refresher is deployed (v9x recon).
-    ("wnba_bdl_active_players", "snapshot_date", DAILY_STALE_HOURS, False),
-    # KEEP-signal of the v84 ghost filter; ESPN/wehoop-sourced — NO refresher deployed
-    # yet. The real stale ROOT behind signal A. WARN-only until a daily_rosters cron
-    # exists (v84 #4). Build a wehoop/ESPN refresher next.
-    ("wnba_daily_rosters", "fetched_at", DAILY_STALE_HOURS, False),
+    # raw BDL /players pull (the bloated all-time dump incl. defunct teams — the
+    # 856-row 2026-05-19 bug). Refreshed daily by daily-rosters.yml (v97). HARD-FAIL
+    # @ 30h since the refresher is deployed + verified (2026-05-24, 209 rows/15 teams).
+    ("wnba_bdl_active_players", "snapshot_date", DAILY_STALE_HOURS, True),
+    # KEEP-signal of the v84 ghost filter + the stale ROOT behind signal A.
+    # Refreshed daily by daily-rosters.yml (v97; ESPN pure-Python). HARD-FAIL @ 30h
+    # since deployed + verified (2026-05-24, 208 rows). (v97 flip-from-warn)
+    ("wnba_daily_rosters", "fetched_at", DAILY_STALE_HOURS, True),
 ]
 
 
