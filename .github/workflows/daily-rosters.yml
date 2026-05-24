@@ -1,0 +1,37 @@
+name: Daily Rosters Refresh
+
+# Refreshes wnba_daily_rosters from ESPN (pure-Python JSON), then re-derives the
+# clean ~213-row wnba_bdl_active_players snapshot from it (espn_athlete_id + name
+# bridge). This is the REAL fix for the v84 ghost filter's KEEP-signal A — the
+# stale ROOT was daily_rosters (ESPN), NOT a BDL /players pull (delta v95).
+# Closes v84 #3. INSERT-only (DELETE-today + INSERT per snapshot_date).
+on:
+  schedule:
+    - cron: '0 12 * * *'   # daily 12:00 UTC
+  workflow_dispatch:        # manual seed / re-trigger (v92 stale-SHA lesson)
+
+concurrency:
+  group: daily-rosters
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily rosters refresh + bdl_active re-derive
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python scripts/daily_rosters_refresh.py
