@@ -1,10 +1,17 @@
 name: Availability Refresh
 
-# Appends a fresh wnba_player_availability_current snapshot via the accent-cascade
-# resolver (scripts/availability_refresh.py — port of cell_3_v2). Runs a few minutes
-# AFTER the BDL injury snapshotter so it consumes the latest injury state. Without
-# this workflow computed_at re-freezes and wnba_forward_play_prob_log silently
-# stalls (delta v78/v79). INSERT-only — never deletes prior snapshots.
+# Appends a fresh wnba_player_availability_current snapshot via the intl-aware
+# accent cascade + 5-signal KEEP-UNION ghost filter
+# (scripts/availability_refresh.py — port of cell_3_v3, delta v84). Runs a few
+# minutes AFTER the BDL injury snapshotter so it consumes the latest injury
+# state. Without this workflow computed_at re-freezes and
+# wnba_forward_play_prob_log silently stalls (delta v78/v79). INSERT-only —
+# never deletes prior snapshots.
+#
+# Registration-refresh touch: 2026-05-24 v92 — re-registers scheduler against
+# new HEAD so post-v84-push runs use the intl-aware cascade. Without this YAML
+# touch, scheduled triggers were stuck running scripts at the pre-v84 SHA
+# (9760f9d5) despite main being at 56b9a5f (delta v91 stale-SHA finding).
 on:
   schedule:
     - cron: '5,35 * * * *'  # twice hourly, 5 min after the */15 BDL ticks
