@@ -11,12 +11,16 @@ name: Strength Live Refresh
 # advances, new snapshot_dates are appended under the SAME model_version. Other
 # model_versions and wnba_power_rankings_v3 are never touched (coexist).
 #
-# CHAINED (delta v163): the in-season RATING refresher series_extend_refresh.py
-# runs FIRST in the same job — it walk-forward EXTENDS the base Kalman + Glicko-2
-# series (wnba_team_kalman / wnba_glicko2_ratings, same model_versions) with any
-# newly-played 2026 games (APPEND-only, idempotent). The surface rebuild then
-# picks up the freshly re-estimated ratings instead of frozen ones. Order matters:
-# series extends -> surface rebuilds its date axis off the new ratings.
+# CHAINED (delta v163 + v165): three ordered steps in one job —
+#   1. games_score_feeder.py (v165, the LINCHPIN): fills played 2026 scores into
+#      wnba_games from ESPN's scoreboard (match by game_id, fill NULL only,
+#      idempotent). Without this the whole chain is inert — scores were frozen at
+#      2026-05-14 with no feeder.
+#   2. series_extend_refresh.py (v163): walk-forward EXTENDS the Kalman + Glicko-2
+#      series (same model_versions) with the newly-scored games (APPEND-only).
+#   3. strength_live_refresh.py (v151/v161): rebuilds the surface off the fresh
+#      ratings.
+# Order matters: scores land -> series re-estimate -> surface + front-end move.
 #
 # Runs daily 12:30 UTC — 30 min AFTER daily-rosters (12:00) so standings are fresh.
 on:
@@ -45,7 +49,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Extend Kalman + Glicko-2 series (in-season ratings) [runs FIRST]
+      - name: Feed played 2026 scores into wnba_games (ESPN) [runs FIRST]
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python scripts/games_score_feeder.py
+
+      - name: Extend Kalman + Glicko-2 series (in-season ratings)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         run: python scripts/series_extend_refresh.py
